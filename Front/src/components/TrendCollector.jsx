@@ -18,6 +18,7 @@ const TrendCollector = () => {
   // 초기 로딩 및 국가 변경 시
   useEffect(() => {
     setKeywords([]); // 국가 변경 시 분석 결과 초기화
+    setTopKeywords([]); // 키워드 배너 초기화
     setTranslateMode(false); // 번역 모드도 초기화
     fetchContents();
   }, [country]);
@@ -33,18 +34,28 @@ const TrendCollector = () => {
     }
   };
 
+  /* AI 분석 관련 State & Handler */
+  const [analyzing, setAnalyzing] = useState(false);
+  const [keywords, setKeywords] = useState([]);
+  const [translateMode, setTranslateMode] = useState(false); // 번역 모드 상태
+  const [topKeywords, setTopKeywords] = useState([]); // 실시간 수집 키워드 (NEW)
+  const [source, setSource] = useState('auto'); // 수집 소스 선택 (NEW)
+
   const handleCollect = async () => {
     setLoading(true);
     setError('');
     setContents({ youtube: [], news: [] });
     setKeywords([]); // 분석 결과 초기화
+    setTopKeywords([]); // 키워드 초기화
     setTranslateMode(false); // 번역 모드 초기화
 
     try {
-      const res = await trendApi.collectTrending(country);
-      // 백엔드가 { youtube: [], news: [] } 형태를 반환함
-      if (res && res.youtube) {
-        setContents(res);
+      // 선택된 소스로 수집 요청
+      const res = await trendApi.collectTrending(country, source);
+      // 백엔드가 { youtube: [], news: [], top_keywords: [] } 형태를 반환함
+      if (res) {
+        if (res.youtube) setContents(res);
+        if (res.top_keywords) setTopKeywords(res.top_keywords);
       } else {
         setError('데이터 형식이 올바르지 않습니다.');
       }
@@ -55,15 +66,6 @@ const TrendCollector = () => {
       setLoading(false);
     }
   };
-
-  const [filter, setFilter] = useState('All'); // 필터 상태 추가
-
-  // ... (중략)
-
-  /* AI 분석 관련 State & Handler */
-  const [analyzing, setAnalyzing] = useState(false);
-  const [keywords, setKeywords] = useState([]);
-  const [translateMode, setTranslateMode] = useState(false); // 번역 모드 상태
 
   const handleAnalyze = async () => {
     setAnalyzing(true);
@@ -80,6 +82,8 @@ const TrendCollector = () => {
       setAnalyzing(false);
     }
   };
+
+  const [filter, setFilter] = useState('All'); // 필터 상태 추가
 
   const allItems = [
     ...contents.youtube.map(item => ({ ...item, type: 'video', score: Math.floor(item.views / 1000), source: 'YouTube' })),
@@ -124,6 +128,34 @@ const TrendCollector = () => {
         ))}
       </div>
 
+      {/* 🔥 실시간 트렌드 키워드 배너 (NEW) */}
+      {topKeywords.length > 0 && (
+        <div style={{
+          marginBottom: '2rem',
+          padding: '1rem',
+          background: 'rgba(255, 255, 255, 0.03)',
+          borderRadius: '12px',
+          border: '1px solid rgba(255, 255, 255, 0.1)',
+          textAlign: 'center'
+        }}>
+          <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.1rem', color: 'var(--primary)' }}>🚀 현재 {countries.find(c => c.code === country)?.name} 급상승 키워드</h3>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.8rem', justifyContent: 'center' }}>
+            {topKeywords.map((k, idx) => (
+              <span key={idx} style={{
+                padding: '0.4rem 0.8rem',
+                borderRadius: '20px',
+                background: 'rgba(139, 92, 246, 0.1)',
+                color: 'white',
+                fontSize: '0.95rem',
+                border: '1px solid rgba(139, 92, 246, 0.3)'
+              }}>
+                #{k}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 소스 필터 탭 */}
       <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem', marginBottom: '2rem', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '1rem' }}>
         {['All', 'YouTube', 'Google News', ...(country === 'KR' ? ['Keyword'] : [])].map((f) => (
@@ -146,8 +178,29 @@ const TrendCollector = () => {
         ))}
       </div>
 
-      {/* 수집 버튼 */}
+      {/* 수집 옵션 및 버튼 */}
       <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+        <div style={{ marginBottom: '1rem' }}>
+          <select
+            value={source}
+            onChange={(e) => setSource(e.target.value)}
+            style={{
+              padding: '0.5rem 1rem',
+              borderRadius: '8px',
+              background: 'rgba(255,255,255,0.05)',
+              border: '1px solid rgba(255,255,255,0.1)',
+              color: 'var(--text-white)',
+              fontSize: '0.9rem',
+              outline: 'none',
+              cursor: 'pointer'
+            }}
+          >
+            <option value="auto">🤖 자동 선택 (권장)</option>
+            {country === 'KR' && <option value="nate">🇰🇷 Nate (실시간 이슈)</option>}
+            <option value="reddit">🌏 Reddit (글로벌 토픽)</option>
+          </select>
+        </div>
+
         <button
           onClick={handleCollect}
           disabled={loading}

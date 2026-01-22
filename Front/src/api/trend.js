@@ -2,8 +2,8 @@ import apiClient from './client';
 
 export const trendApi = {
   // 실시간 인기 콘텐츠 수집 (YouTube + News)
-  collectTrending: async (country = 'KR') => {
-    const response = await apiClient.post(`/trend/collect-trending?country=${country}`);
+  collectTrending: async (country = 'KR', source = 'auto') => {
+    const response = await apiClient.post(`/trend/collect-trending?country=${country}&source=${source}`);
     return response.data;
   },
 

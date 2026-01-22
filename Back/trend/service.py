@@ -9,7 +9,8 @@ from .schemas import TrendCollectionResponse
 # API Clients
 from ..clients.youtube_client import YouTubeClient
 from ..clients.rss_client import RSSClient
-from ..clients.scraper_client import ScraperClient
+from ..clients.nate_client import NateClient
+from ..clients.reddit_client import RedditClient
 
 # Repositories
 from .repositories.keyword_repo import KeywordRepository
@@ -17,95 +18,109 @@ from .repositories.youtube_repo import YouTubeRepository
 from .repositories.news_repo import NewsRepository
 
 class TrendService:
-    """트렌드 수집 및 분석 서비스 (Repository Pattern 적용)"""
+    """트렌드 수집 및 분석 서비스"""
     
     def __init__(self):
         # Clients
         self.youtube_client = YouTubeClient()
         self.rss_client = RSSClient()
-        self.scraper_client = ScraperClient()
+        self.nate_client = NateClient()
+        self.reddit_client = RedditClient()
         
-        # Repositories (Raw SQL 방식이므로 세션 불필요)
+        # Repositories
         self.keyword_repo = KeywordRepository()
         self.youtube_repo = YouTubeRepository()
         self.news_repo = NewsRepository()
 
-    async def collect_trending_contents(self, country: str) -> TrendCollectionResponse:
+    async def collect_trending_contents(self, country: str, source: str = "auto") -> TrendCollectionResponse:
         """
-        실시간 인기 콘텐츠 수집 로직
+        실시간 인기 콘텐츠 수집 로직 (Keyword Driven)
+        :param source: 'auto', 'nate', 'reddit'
         """
-        logger.info(f"🔥 실시간 인기 콘텐츠 수집 시작: {country}")
+        logger.info(f"🔥 실시간 인기 콘텐츠 수집 시작 ({country}, source={source})")
         
         # 1. 키워드 ID 확보
         keyword_obj = await self.keyword_repo.get_or_create_daily_keyword(country)
-        # Raw SQL 결과는 Dict이므로 ['id'] 접근
         keyword_id = keyword_obj['id']
-        
-        # 2. YouTube 수집
-        youtube_count = 0
-        videos = await self.youtube_client.get_trending_videos(country, max_results=20)
-        
-        # [Plan B] 한국인데 0개면 실검 기반 검색
-        if not videos and country == 'KR':
-            logger.warning("⚠️ YouTube Trending 0개 -> 실시간 검색어로 대체 수집 시도")
-            signal_keywords = await self.scraper_client.crawl_signal_bz()
-            if signal_keywords:
-                top_keyword = signal_keywords[0]['keyword']
-                logger.info(f"🔎 대체 검색어: {top_keyword}")
-                videos = await self.youtube_client.search_videos(top_keyword, max_results=10)
+        trend_keywords = []
 
-        # 3. YouTube 저장
-        if videos:
-            result = await self.youtube_repo.save_videos(keyword_id, country, videos)
-            youtube_count = result['saved'] + result['skipped']
-            logger.info(f"✅ YouTube 처리: 신규 {result['saved']}, 중복 {result['skipped']}")
-        
-        # 4. News/Signal 수집
-        news_count = 0
-        articles = await self.rss_client.fetch_google_news(country)
-        
-        if country == 'KR':
-            signal_keywords = await self.scraper_client.crawl_signal_bz()
-            if signal_keywords:
-                logger.info(f"✅ Signal.bz 추가: {len(signal_keywords)}개")
-                for item in reversed(signal_keywords): # 역순 insert로 순서 유지
-                    articles.insert(0, {
-                        'keyword': f"🔥 {item['keyword']}",
-                        'url': '',
-                        'published_at': datetime.now().isoformat()
-                    })
+        # 2. 트렌드 키워드 수집
+        if source == "nate":
+            if country == 'KR':
+                trend_keywords = await self.nate_client.get_realtime_trends()
+            else:
+                logger.warning("⚠️ Nate는 한국(KR)만 지원합니다.")
+                
+        elif source == "reddit":
+            trend_keywords = await self.reddit_client.get_global_trends()
 
-        if articles:
-            # RSS 포맷 -> DB 모델 스키마 매핑
-            news_list = []
-            for article in articles:
-                # URL 생성 로직
-                final_url = article.get('url')
-                if not final_url and '🔥' in article['keyword']:
-                     clean_keyword = article['keyword'].replace('🔥 ', '')
-                     final_url = f"https://www.google.com/search?q={clean_keyword}"
+        else: # source == "auto" or others
+            if country == 'KR':
+                # KR -> Nate 우선
+                trend_keywords = await self.nate_client.get_realtime_trends()
+                if not trend_keywords:
+                    logger.warning("⚠️ Nate 수집 실패 -> Reddit(Global) 대체 시도")
+                    trend_keywords = await self.reddit_client.get_global_trends()
+            else:
+                # KR 외 -> Reddit (Global)
+                # Pytrends/Signal 제거로 인해 글로벌 소스는 Reddit이 유일함
+                trend_keywords = await self.reddit_client.get_global_trends()
 
-                news_list.append({
-                    'title': article['keyword'],
-                    'source': 'Google News' if 'keyword' in article and '🔥' not in article['keyword'] else '실시간 검색어',
-                    'description': '',
-                    'url': final_url or '',
-                    'published_at': article.get('published_at') or datetime.now().isoformat()
-                })
+
+        # 수집 대상 키워드 선정 (Top 5)
+        target_keywords = trend_keywords[:5] if trend_keywords else []
+        
+        if not target_keywords:
+             logger.warning(f"⚠️ 수집된 키워드가 없습니다. (Source: {source}, Country: {country})")
+             # 키워드가 없어도 '인급동' 등으로 콘텐츠는 채울 수 있음.
+        else:
+             logger.info(f"🎯 최종 수집 대상 키워드: {target_keywords}")
+
+        total_videos = []
+        total_news = []
+        
+        # 3. 키워드 기반 콘텐츠 수집
+        if target_keywords:
+            for keyword in target_keywords:
+                # 3-1. YouTube 검색
+                found_videos = await self.youtube_client.search_videos(keyword, max_results=3)
+                total_videos.extend(found_videos)
+                
+                # 3-2. News 검색 (생략. 전체 뉴스에서 매칭하거나, 향후 검색 기능 추가)
+        
+        # [보완] 콘텐츠 부족 시 YouTube 인급동(Trending) 추가
+        if len(total_videos) < 10:
+             trending_videos = await self.youtube_client.get_trending_videos(country, max_results=10)
+             total_videos.extend(trending_videos)
+
+        # 4. 일반 뉴스(RSS) 수집 - 키워드 무관
+        headlines = await self.rss_client.fetch_google_news(country)
+        for hl in headlines:
+            total_news.append({
+                'title': hl['keyword'], 
+                'source': 'Google News',
+                'description': '',
+                'url': hl.get('url', ''),
+                'published_at': hl.get('published_at') or datetime.now().isoformat()
+            })
             
-            # 5. News 저장
-            await self.news_repo.save_articles(keyword_id, country, news_list)
-            news_count = len(news_list)
-            logger.info(f"✅ News 저장: {news_count}개")
+        # 5. DB 저장
+        unique_videos = {v['video_id']: v for v in total_videos}.values()
+        unique_news = {n['url']: n for n in total_news if n.get('url')}.values()
         
-        # 6. 통계 업데이트 (Commit은 Repo 내부 execute에서 수행됨)
+        youtube_res = await self.youtube_repo.save_videos(keyword_id, country, list(unique_videos))
+        await self.news_repo.save_articles(keyword_id, country, list(unique_news))
+        
+        logger.info(f"✅ 저장 완료: YouTube {len(unique_videos)}개, News {len(unique_news)}개")
+
+        # 6. 통계 업데이트
         await self.keyword_repo.update_statistics(keyword_id)
         
-        total = youtube_count + news_count
-        logger.info(f"🎉 수집 완료: 총 {total}건")
+        total = len(unique_videos) + len(unique_news)
         
         return TrendCollectionResponse(
             success=True,
-            message=f"콘텐츠 {total}개 수집 완료",
-            keywords_count=total
+            message=f"콘텐츠 {total}개 수집 완료 (키워드: {', '.join(target_keywords)})",
+            keywords_count=total,
+            top_keywords=target_keywords
         )

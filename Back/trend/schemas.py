@@ -117,6 +117,7 @@ class TrendCollectionRequest(BaseModel):
     """트렌드 수집 요청"""
     countries: List[str] = ["KR", "JP", "TW", "US", "ID"]
     top_n_per_country: int = Field(20, ge=1, le=50)
+    preferred_source: str = "auto"  # auto, nate, reddit, pytrends, signal
     deep_analysis: bool = False
 
 
@@ -132,6 +133,7 @@ class TrendCollectionResponse(BaseModel):
     success: bool
     message: str
     keywords_count: int
+    top_keywords: List[str] = []
     instagram_count: int = 0
     youtube_count: int = 0
     news_count: int = 0
