@@ -1,30 +1,26 @@
 """
 트렌드 수집 API 엔드포인트
 """
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Query
+# from fastapi import Depends, ... (get_db 사용 안 함)
 
-from ..core.database import get_db
 from .service import TrendService
-from .schemas import TrendCollectionResponse
+# from .schemas import TrendCollectionResponse
 
 router = APIRouter(prefix="/trend", tags=["Trend Collection"])
 
 
 @router.post("/collect-trending")
 async def collect_trending_contents(
-    country: str = Query(..., description="국가 코드 (KR, US, JP 등)"),
-    db: AsyncSession = Depends(get_db)
+    country: str = Query(..., description="국가 코드 (KR, US, JP 등)")
 ):
     """실시간 인기 콘텐츠 수집 (YouTube + News + Signal)"""
-    service = TrendService(db)
+    # Raw SQL로 변경되어 db 세션 불필요
+    service = TrendService()
     await service.collect_trending_contents(country)
     
-    # 세션 갱신 (최신 커밋된 데이터 읽기 위함)
-    db.expire_all()
-    
     # 수집 후 바로 전체 목록 조회해서 반환
-    result = await get_trending_contents(country=country, limit=50, db=db)
+    result = await get_trending_contents(country=country, limit=50)
     print(f"DEBUG: YouTube={len(result['youtube'])}, News={len(result['news'])}")
     return result
 
@@ -32,54 +28,48 @@ async def collect_trending_contents(
 @router.get("/trending/contents")
 async def get_trending_contents(
     country: str = "KR",
-    limit: int = 50,
-    db: AsyncSession = Depends(get_db)
+    limit: int = 50
 ):
     """
     오늘 수집된 인기 콘텐츠 조회 (YouTube + News)
     """
-    from .models import Keyword, YouTubeContent, NewsContent
-    from sqlalchemy import select
-    from datetime import datetime
+    from .repositories.keyword_repo import KeywordRepository
+    from .repositories.youtube_repo import YouTubeRepository
+    from .repositories.news_repo import NewsRepository
     
-    # 오늘 날짜의 Trending 키워드 찾기
-    today = datetime.now().strftime("%Y%m%d")
-    dummy_keyword = f"Trending_{country}_{today}"
+    keyword_repo = KeywordRepository()
+    youtube_repo = YouTubeRepository()
+    news_repo = NewsRepository()
+
+    # 1. 오늘자 키워드 ID 찾기
+    keyword_obj = await keyword_repo.get_or_create_daily_keyword(country)
     
-    stmt = select(Keyword).where(Keyword.keyword == dummy_keyword).order_by(Keyword.id.desc())
-    result = await db.execute(stmt)
-    keyword = result.scalars().first()
-    
-    if not keyword:
+    if not keyword_obj:
         return {"youtube": [], "news": []}
     
-    # YouTube 조회
-    yt_stmt = select(YouTubeContent).where(YouTubeContent.keyword_id == keyword.id).limit(limit)
-    yt_res = await db.execute(yt_stmt)
-    yt_list = yt_res.scalars().all()
+    keyword_id = keyword_obj['id']
     
-    # News 조회
-    news_stmt = select(NewsContent).where(NewsContent.keyword_id == keyword.id).limit(limit)
-    news_res = await db.execute(news_stmt)
-    news_list = news_res.scalars().all()
+    # 2. 콘텐츠 조회 (Repo 사용 -> 결과는 Dict 리스트)
+    yt_list = await youtube_repo.get_by_keyword(keyword_id, limit=limit)
+    news_list = await news_repo.get_by_keyword(keyword_id, limit=limit)
     
     return {
         "youtube": [
             {
-                "title": y.title,
-                "url": y.url,
-                "channel": y.channel,
-                "views": y.views,
-                "likes": y.likes,
+                "title": y['title'],
+                "url": y['url'],
+                "channel": y['channel'],
+                "views": y['views'],
+                "likes": y['likes'],
                 "type": "video"
             } for y in yt_list
         ],
         "news": [
             {
-                "title": n.title,
-                "url": n.url,
-                "source": n.source,
-                "published_at": str(n.published_at),
+                "title": n['title'],
+                "url": n['url'],
+                "source": n['source'],
+                "published_at": str(n['published_at']),
                 "type": "news"
             } for n in news_list
         ]
@@ -89,8 +79,7 @@ async def get_trending_contents(
 @router.get("/trending/keywords")
 async def get_trending_keywords(
     country: str = "KR",
-    top_n: int = 20,
-    db: AsyncSession = Depends(get_db)
+    top_n: int = 20
 ):
     """
     오늘 수집된 콘텐츠에서 핵심 키워드 추출 (NLP 분석)
@@ -98,7 +87,7 @@ async def get_trending_keywords(
     from .analyzer import KeywordAnalyzer
     
     # 먼저 콘텐츠 조회
-    contents = await get_trending_contents(country=country, limit=100, db=db)
+    contents = await get_trending_contents(country=country, limit=100)
     
     # 키워드 분석
     analyzer = KeywordAnalyzer()

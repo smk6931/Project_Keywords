@@ -1,0 +1,28 @@
+=== 데이터베이스 드라이버 통합 전략 (Psycopg 3) ===
+
+1. 개요
+   - 기존의 이원화된 드라이버(asyncpg + psycopg2) 구조를 폐기하고,
+   - 차세대 표준인 Psycopg 3 (psycopg) 라이브러리 하나로 통합함.
+
+2. 변경 배경
+   [AS-IS] 과도기적 패턴
+   - 실행(FastAPI): asyncpg (비동기 전용, 빠름)
+   - 관리(Alembic): psycopg2 (동기 전용, 호환성 좋음)
+   - 문제점: 라이브러리 2개 관리, 커넥션 풀 이원화, 설정 복잡.
+
+   [TO-BE] 통합 패턴
+   - 실행 & 관리: psycopg (v3)
+   - 특징: 하나의 라이브러리가 '동기'와 '비동기(asyncio)'를 모두 네이티브로 지원.
+   - 장점:
+     1. 의존성 단순화 (requirements.txt에서 asyncpg 제거)
+     2. SQLAlchemy 2.0과 완벽 호환
+     3. Raw SQL 실행 시 성능 우수 (C-extension binary)
+
+3. 구현 상세
+   - Connection Pool: `psycopg_pool.AsyncConnectionPool` 사용
+   - Parameter Style: Positional (`%s`) 방식 사용 (PostgreSQL 표준)
+   - ORM 제거: 단순 조회/저장은 Raw SQL로 처리하여 오버헤드 최소화
+
+4. 주의사항
+   - 설치 시 `psycopg[binary]`와 `psycopg-pool` 패키지 필요.
+   - SQL 작성 시 `:param` 대신 `%s` 플레이스홀더 사용 필수.

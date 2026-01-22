@@ -17,12 +17,27 @@ logger.add(
     level=settings.LOG_LEVEL
 )
 
+from contextlib import asynccontextmanager
+from .core.database import init_pool, close_pool
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 시작 시
+    logger.info("🚀 Keyword Trend Collector API 시작")
+    logger.info(f"📊 DEBUG 모드: {settings.DEBUG}")
+    await init_pool()
+    yield
+    # 종료 시
+    logger.info("👋 서버 종료")
+    await close_pool()
+
 # FastAPI 앱 생성
 app = FastAPI(
     title="Keyword Trend Collector API",
     description="글로벌 트렌드 키워드 수집 및 분석 시스템",
     version="1.0.0",
-    debug=settings.DEBUG
+    debug=settings.DEBUG,
+    lifespan=lifespan
 )
 
 # CORS 설정
@@ -46,16 +61,3 @@ async def root():
         "service": "Keyword Trend Collector",
         "version": "1.0.0"
     }
-
-
-@app.on_event("startup")
-async def startup_event():
-    """서버 시작 시 실행"""
-    logger.info("🚀 Keyword Trend Collector API 시작")
-    logger.info(f"📊 DEBUG 모드: {settings.DEBUG}")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """서버 종료 시 실행"""
-    logger.info("👋 서버 종료")

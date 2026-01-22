@@ -9,7 +9,12 @@ class Settings(BaseSettings):
     """애플리케이션 전역 설정"""
     
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://user:password@localhost:5432/keyworld"
+    DATABASE_URL: str = "postgresql://user:password@localhost:5432/keyworld"
+    DB_USER: str = "user"
+    DB_PASSWORD: str = "password"
+    DB_HOST: str = "localhost"
+    DB_PORT: str = "5432"
+    DB_NAME: str = "keyworld"
     
     # API Keys
     APIFY_TOKEN: str
