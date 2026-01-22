@@ -1,132 +1,77 @@
 """
-데이터베이스 설정 (Raw SQL + AsyncConnectionPool)
+데이터베이스 설정 (SQLAlchemy Async Engine + asyncpg)
 """
 import os
-from psycopg.rows import dict_row
-from psycopg_pool import AsyncConnectionPool
-from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker, declarative_base
-from dotenv import load_dotenv
+from .config import settings
 
-load_dotenv()
+# 1. 비동기 엔진 생성
+# config.py의 설정을 사용 (postgresql+asyncpg://...)
+# 덮어쓰기: config.py의 기본값은 'postgresql+asyncpg://' 가 아니라면 수정 필요
+# 사용자님의 docker-compose 환경에 맞게 자동 구성
+# config.py의 DATABASE_URL이 ORM용(psycopg)일 수 있으므로 여기서 재구성하거나 config를 믿음.
+# 안전하게 여기서 조합합니다.
 
-# 환경 변수 로드
-# 환경 변수 로드
-DB_USER = os.getenv("DB_USER", "Project_Keyword")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "1234")
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5440") # 포트 주의! (Docker: 5440)
-DB_NAME = os.getenv("DB_NAME", "Project_Keyword")
+# DATABASE_URL 재조립 (asyncpg 드라이버 강제)
+ASYNC_DB_URL = f"postgresql+asyncpg://{settings.DB_USER}:{settings.DB_PASSWORD}@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}"
 
-# Connection String
-DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-
-# 1. SQLAlchemy Engine (Alembic 및 DDL 생성용)
-# psycopg(v3) 사용 명시
-ALEMBIC_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://")
-engine = create_engine(ALEMBIC_URL, echo=False)
-
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine,
+engine = create_async_engine(
+    ASYNC_DB_URL,
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True,
+    echo=settings.DEBUG  # 디버그 모드일 때 쿼리 로그 출력
 )
 
+# 2. Base 선언 (Alembic용)
 Base = declarative_base()
 
-# [중요] Alembic이 모델을 인식할 수 있도록 모델들을 여기서 Import
-# 새 모델이 생기면 아래에 추가하세요.
-from ..trend.models import *  # noqa: F401, F403
+# 중요: Alembic 모델 인식용 import
+from ..trend.models import *  # noqa: F401
 
-# 2. Async Connection Pool (실제 쿼리 실행용)
-pool: AsyncConnectionPool = None
+# 3. Raw SQL 헬퍼 함수 (SQLAlchemy Core 사용)
 
+async def fetch_one(query: str, params: dict = None) -> dict | None:
+    """SELECT 단건 조회 (결과를 dict로 반환)"""
+    async with engine.connect() as conn:
+        # text()로 감싸서 실행
+        result = await conn.execute(text(query), params or {})
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+async def fetch_all(query: str, params: dict = None) -> list[dict]:
+    """SELECT 다건 조회"""
+    async with engine.connect() as conn:
+        result = await conn.execute(text(query), params or {})
+        rows = result.mappings().all()
+        return [dict(row) for row in rows]
+
+async def execute(query: str, params: dict = None):
+    """INSERT, UPDATE, DELETE (자동 커밋)"""
+    async with engine.begin() as conn:
+         await conn.execute(text(query), params or {})
+
+async def execute_return(query: str, params: dict = None) -> dict | None:
+    """INSERT/UPDATE 후 결과 반환 (RETURNING)"""
+    async with engine.begin() as conn:
+        result = await conn.execute(text(query), params or {})
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+# 4. Pool Lifecycle (main.py에서 사용)
 async def init_pool():
-    """DB 연결 풀 초기화 (앱 시작 시 호출)"""
-    global pool
+    # SQLAlchemy Engine은 Lazy Connect라 명시적 init 불필요하지만
+    # 연결 테스트를 위해 핑을 한번 날려봄
     try:
-        pool = AsyncConnectionPool(
-            conninfo=DATABASE_URL,
-            kwargs={"row_factory": dict_row}, 
-            min_size=1,
-            max_size=50,
-            open=False, # 명시적으로 open 호출 위해
-            timeout=5.0 # 5초 타임아웃
-        )
-        await pool.open()
-        
-        # 연결 테스트 (Ping)
-        async with pool.connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute("SELECT 1")
-                
-        print(f"🔥 DB pool initialized (Raw SQL) - Connected to {DB_HOST}:{DB_PORT}/{DB_NAME}")
-        
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        print(f"🔥 Async DB Engine initialized - Connected to {settings.DB_HOST}:{settings.DB_PORT}")
     except Exception as e:
-        safe_url = DATABASE_URL.replace(DB_PASSWORD, "****") if DB_PASSWORD else DATABASE_URL
         print(f"❌ DB 연결 실패: {e}")
-        print(f"   URL: {safe_url}")
-        # 연결 실패해도 앱이 죽지 않도록 예외를 다시 던지지 않음 (필요 시 수정)
-        raise e
+        # raise e  # 필요 시 주석 해제
 
 async def close_pool():
-    """DB 연결 풀 종료 (앱 종료 시 호출)"""
-    global pool
-    if pool:
-        await pool.close()
-        print("🧹 DB pool closed")
-
-def get_pool() -> AsyncConnectionPool:
-    if pool is None:
-        raise RuntimeError("DB pool is not initialized")
-    return pool
-
-# ===== Raw SQL 헬퍼 함수 =====
-
-async def fetch_one(sql: str, params=()) -> dict | None:
-    """단일 행 조회"""
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(sql, params)
-            return await cur.fetchone()
-
-async def fetch_all(sql: str, params=()) -> list[dict]:
-    """다중 행 조회"""
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(sql, params)
-            return await cur.fetchall()
-
-async def execute(sql: str, params=()):
-    """단순 실행 (INSERT, UPDATE, DELETE)"""
-    async with pool.connection() as conn:
-        try:
-            async with conn.cursor() as cur:
-                await cur.execute(sql, params)
-            await conn.commit()
-        except Exception as e:
-            print(f"❌ execute 실패: {e}")
-            await conn.rollback()
-            raise e
-
-async def execute_return(sql: str, params=()) -> dict | None:
-    """실행 후 결과 반환 (RETURNING 절 사용 시)"""
-    async with pool.connection() as conn:
-        try:
-            async with conn.cursor() as cur:
-                await cur.execute(sql, params)
-                row = await cur.fetchone()
-            await conn.commit()
-            return row
-        except Exception as e:
-            print(f"❌ execute_return 실패: {e}")
-            await conn.rollback()
-            raise e
-
-# (구) 의존성 함수 - 이제 사용하지 않음 (Router 수정 시 제거 예정)
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    await engine.dispose()
+    print("🧹 Async DB Engine disposed")

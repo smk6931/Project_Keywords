@@ -13,30 +13,36 @@ class NewsRepository:
                 continue
 
             # 중복 체크
-            sql_check = "SELECT id FROM news_contents WHERE url = %s"
-            existing = await fetch_one(sql_check, (url,))
+            existing = await fetch_one(
+                "SELECT id FROM news_contents WHERE url = :url",
+                {"url": url}
+            )
             
             if existing:
                 # 업데이트 (소속 키워드 갱신)
-                sql_update = "UPDATE news_contents SET keyword_id = %s, collected_at = NOW() WHERE id = %s"
-                await execute(sql_update, (keyword_id, existing['id']))
+                await execute(
+                    "UPDATE news_contents SET keyword_id = :keyword_id, collected_at = NOW() WHERE id = :id",
+                    {"keyword_id": keyword_id, "id": existing['id']}
+                )
             else:
                 # 신규
-                sql_insert = """
+                await execute(
+                    """
                     INSERT INTO news_contents 
                     (keyword_id, keyword_country, title, source, description, published_at, url, collected_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
-                """
-                await execute(sql_insert, (
-                    keyword_id,
-                    country,
-                    article.get('title'),
-                    article.get('source'),
-                    article.get('description', ''),
-                    article.get('published_at'),
-                    url
-                ))
+                    VALUES (:keyword_id, :country, :title, :source, :description, :published_at, :url, NOW())
+                    """,
+                    {
+                        "keyword_id": keyword_id,
+                        "country": country,
+                        "title": article.get('title'),
+                        "source": article.get('source'),
+                        "description": article.get('description', ''),
+                        "published_at": article.get('published_at'),
+                        "url": url
+                    }
+                )
 
     async def get_by_keyword(self, keyword_id: int, limit: int = 50) -> List[dict]:
-        sql = "SELECT * FROM news_contents WHERE keyword_id = %s LIMIT %s"
-        return await fetch_all(sql, (keyword_id, limit))
+        sql = "SELECT * FROM news_contents WHERE keyword_id = :keyword_id LIMIT :limit"
+        return await fetch_all(sql, {"keyword_id": keyword_id, "limit": limit})

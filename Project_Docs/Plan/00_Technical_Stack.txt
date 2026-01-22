@@ -1,28 +1,27 @@
-=== 데이터베이스 드라이버 통합 전략 (Psycopg 3) ===
+=== 데이터베이스 드라이버 및 엔진 전략 (최종 확정) ===
 
-1. 개요
-   - 기존의 이원화된 드라이버(asyncpg + psycopg2) 구조를 폐기하고,
-   - 차세대 표준인 Psycopg 3 (psycopg) 라이브러리 하나로 통합함.
+1. 최종 결정: SQLAlchemy Async Engine + Asyncpg
+   - ORM: SQLAlchemy 2.0 (Async)
+   - Driver: asyncpg (PostgreSQL 전용 고성능 비동기 드라이버)
+   - Connection Pool: SQLAlchemy Engine 내부 풀링 사용 (NullPool / AsyncAdaptedQueuePool)
 
-2. 변경 배경
-   [AS-IS] 과도기적 패턴
-   - 실행(FastAPI): asyncpg (비동기 전용, 빠름)
-   - 관리(Alembic): psycopg2 (동기 전용, 호환성 좋음)
-   - 문제점: 라이브러리 2개 관리, 커넥션 풀 이원화, 설정 복잡.
+2. 이 전략을 선택한 이유 (Raw Psycopg3 Pool 방식 폐기 사유)
+   - [안정성] SQLAlchemy Engine은 수년간 검증된 연결 관리 및 트랜잭션 처리 로직을 내장하고 있음.
+   - [성능] asyncpg는 현재 파이썬 생태계에서 압도적으로 빠른 PostgreSQL 드라이버임.
+   - [유지보수] 직접 Pool을 관리하는 코드를 짤 필요 없이, 엔진 설정(create_async_engine)만으로 완벽한 제어가 가능.
+   - [확장성] 추후 ORM 기능이 필요할 때 코드를 갈아엎을 필요 없이 Session만 붙이면 됨. Raw SQL 실행(text 함수)도 완벽 지원.
 
-   [TO-BE] 통합 패턴
-   - 실행 & 관리: psycopg (v3)
-   - 특징: 하나의 라이브러리가 '동기'와 '비동기(asyncio)'를 모두 네이티브로 지원.
-   - 장점:
-     1. 의존성 단순화 (requirements.txt에서 asyncpg 제거)
-     2. SQLAlchemy 2.0과 완벽 호환
-     3. Raw SQL 실행 시 성능 우수 (C-extension binary)
+3. 코드 패턴 가이드
+   - SQL 실행: `engine.connect()` 또는 `engine.begin()` 사용.
+   - 파라미터 바인딩: `:param` (Named Parameter) 방식 사용. `%s` 아님.
+     - 예: `text("SELECT * FROM table WHERE id = :id")`, `{"id": 1}`
+   - 결과 매핑: `result.mappings()`를 사용하여 `dict` 형태로 깔끔하게 변환.
 
-3. 구현 상세
-   - Connection Pool: `psycopg_pool.AsyncConnectionPool` 사용
-   - Parameter Style: Positional (`%s`) 방식 사용 (PostgreSQL 표준)
-   - ORM 제거: 단순 조회/저장은 Raw SQL로 처리하여 오버헤드 최소화
+4. 의존성 (requirements.txt)
+   - sqlalchemy[asyncio]
+   - asyncpg
+   - (alembic 사용 시 psycopg2-binary 등이 필요할 수 있으나, async 엔진만으로도 구성 가능)
 
-4. 주의사항
-   - 설치 시 `psycopg[binary]`와 `psycopg-pool` 패키지 필요.
-   - SQL 작성 시 `:param` 대신 `%s` 플레이스홀더 사용 필수.
+5. 결론
+   - "바퀴를 다시 발명하지 말자."
+   - 프레임워크(SQLAlchemy)가 제공하는 검증된 기능을 활용하여 비즈니스 로직에 집중한다.

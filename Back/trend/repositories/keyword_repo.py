@@ -11,42 +11,57 @@ class KeywordRepository:
         dummy_keyword = f"Trending_{country}_{today}"
         
         # 조회
-        sql_select = """
+        keyword_obj = await fetch_one(
+            """
             SELECT * FROM keywords 
-            WHERE keyword = %s 
+            WHERE keyword = :keyword 
             ORDER BY id DESC LIMIT 1
-        """
-        keyword_obj = await fetch_one(sql_select, (dummy_keyword,))
+            """,
+            {"keyword": dummy_keyword}
+        )
         
         # 없으면 생성
         if not keyword_obj:
-            sql_insert = """
+            keyword_obj = await execute_return(
+                """
                 INSERT INTO keywords (keyword, country, trend_volume, rank, keyword_collected_at)
-                VALUES (%s, %s, %s, %s, NOW())
+                VALUES (:keyword, :country, 0, 0, NOW())
                 RETURNING *
-            """
-            keyword_obj = await execute_return(sql_insert, (dummy_keyword, country, 0, 0))
+                """,
+                {"keyword": dummy_keyword, "country": country}
+            )
             
         return keyword_obj
 
     async def update_statistics(self, keyword_id: int):
         """Youtube/News 카운트 집계 및 점수 갱신"""
         # 유튜브 카운트
-        sql_count_yt = "SELECT COUNT(*) as count FROM youtube_contents WHERE keyword_id = %s"
-        res_yt = await fetch_one(sql_count_yt, (keyword_id,))
+        res_yt = await fetch_one(
+            "SELECT COUNT(*) as count FROM youtube_contents WHERE keyword_id = :keyword_id",
+            {"keyword_id": keyword_id}
+        )
         youtube_count = res_yt['count'] if res_yt else 0
         
         # 뉴스 카운트
-        sql_count_news = "SELECT COUNT(*) as count FROM news_contents WHERE keyword_id = %s"
-        res_news = await fetch_one(sql_count_news, (keyword_id,))
+        res_news = await fetch_one(
+            "SELECT COUNT(*) as count FROM news_contents WHERE keyword_id = :keyword_id",
+            {"keyword_id": keyword_id}
+        )
         news_count = res_news['count'] if res_news else 0
         
         score = (youtube_count * 1.5) + (news_count * 1)
         
         # 업데이트
-        sql_update = """
+        await execute(
+            """
             UPDATE keywords 
-            SET youtube_videos = %s, news_count = %s, score = %s
-            WHERE id = %s
-        """
-        await execute(sql_update, (youtube_count, news_count, score, keyword_id))
+            SET youtube_videos = :yt_count, news_count = :news_count, score = :score
+            WHERE id = :keyword_id
+            """,
+            {
+                "yt_count": youtube_count,
+                "news_count": news_count,
+                "score": score,
+                "keyword_id": keyword_id
+            }
+        )
